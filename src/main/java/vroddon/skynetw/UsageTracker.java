@@ -5,6 +5,8 @@ import java.awt.TrayIcon.MessageType;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.file.*;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -20,6 +22,7 @@ public class UsageTracker {
     private static final int SAVE_INTERVAL_MINUTES = 5;
     private static final int SCREENSAVER_CHECK_SECONDS = 5;
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final String API_URL = "https://cosasbuenas.es/api/report.php?computertoday=";
     
     private TrayIcon trayIcon;
     private SystemTray tray;
@@ -195,8 +198,8 @@ public class UsageTracker {
     
     private void saveUsageTime() {
         String filename = DATA_DIRECTORY + File.separator + currentDate.format(DATE_FORMAT) + ".txt";
+        long totalMinutes = todayUsage.toMinutes();
         try (PrintWriter writer = new PrintWriter(new FileWriter(filename))) {
-            long totalMinutes = todayUsage.toMinutes();
             long hours = totalMinutes / 60;
             long minutes = totalMinutes % 60;
             
@@ -208,7 +211,29 @@ public class UsageTracker {
             System.err.println("Error saving usage data: " + e.getMessage());
             trayIcon.displayMessage("Error", "Failed to save usage data", MessageType.ERROR);
         }
+        // Call the API to report minutes
+        reportToApi(totalMinutes);        
     }
+private void reportToApi(long minutes) {
+        // Run the API call in a separate thread to avoid blocking the UI
+        new Thread(() -> {
+            try {
+                URL url = new URL(API_URL + minutes);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                
+                int responseCode = conn.getResponseCode();
+                if (responseCode == HttpURLConnection.HTTP_OK) {
+                    System.out.println("Successfully reported " + minutes + " minutes to API");
+                } else {
+                    System.err.println("API call failed with response code: " + responseCode);
+                }
+            } catch (Exception e) {
+                System.err.println("Error reporting to API: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }).start();
+    }    
     
     private void loadTodayUsage() {
         String filename = DATA_DIRECTORY + File.separator + currentDate.format(DATE_FORMAT) + ".txt";
