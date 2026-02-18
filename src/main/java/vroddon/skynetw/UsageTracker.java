@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Date;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.TimeUnit;
@@ -270,9 +271,18 @@ private void reportToApi(long minutes) {
         long minutes = totalMinutes % 60;
         
         String screensaverStatus = screensaverActive ? "Active" : "Inactive";
+        String version ="";
+        try{
+        URL classUrl = UsageTracker.class.getResource("UsageTracker.class");
+        File classFile = new File(classUrl.toURI());
+        long lastModified = classFile.lastModified();
+        Date compilationTime = new Date(lastModified);
+        version = ":" + compilationTime;        
+        }catch(Exception e){}
         
         JOptionPane.showMessageDialog(null,
-            String.format("Today's computer usage: %d hours, %d minutes\n" +
+            String.format("Version: " + version +"\n" +
+                         "Today's computer usage: %d hours, %d minutes\n" +
                          "Tracking since: %s\n" +
                          "Current screensaver status: %s\n" +
                          "Data saved every %d minutes to:\n%s",
