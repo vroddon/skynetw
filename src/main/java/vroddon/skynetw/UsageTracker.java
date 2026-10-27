@@ -23,7 +23,7 @@ public class UsageTracker {
     private static final int SAVE_INTERVAL_MINUTES = 5;
     private static final int SCREENSAVER_CHECK_SECONDS = 5;
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-    private static final String API_URL = "https://cosasbuenas.es/api/report.php?computertoday=";
+    private static final String API_URL = "https://cosasbuenas.es/cgi-bin/report.cgi?computertoday=";
     
     private TrayIcon trayIcon;
     private SystemTray tray;

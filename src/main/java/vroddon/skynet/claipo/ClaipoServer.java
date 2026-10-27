@@ -1,4 +1,4 @@
-package vroddon.skynetw;
+package vroddon.skynet.claipo;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -32,7 +32,9 @@ public class ClaipoServer {
                 }
             }
         });
-        
+        /** 
+         * Si se invoca https://localhost:8978/claipo se lanza el interfaz gráfico de claipo
+         */
         server.createContext("/claipo", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
