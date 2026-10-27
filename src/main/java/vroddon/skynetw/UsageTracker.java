@@ -21,19 +21,26 @@ import javax.swing.*;
 public class UsageTracker {
     private static final String DATA_DIRECTORY = "D:\\svn\\skynetw\\data";
     private static final int SAVE_INTERVAL_MINUTES = 5;
-    private static final int SCREENSAVER_CHECK_SECONDS = 5;
+    // The usage is measured by sampling every SAMPLE_SECONDS. A sample adds the time elapsed since the
+    // previous one only if the user touched the keyboard or the mouse in the last IDLE_LIMIT_MINUTES
+    // and the screensaver is not running. A gap longer than MAX_SAMPLE_GAP_SECONDS (computer asleep,
+    // program stalled, clock changed) is discarded, so one sample can never add more than that.
+    private static final int SAMPLE_SECONDS = 5;
+    private static final int IDLE_LIMIT_MINUTES = 5;
+    private static final int MAX_SAMPLE_GAP_SECONDS = 30;
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final String API_URL = "https://cosasbuenas.es/cgi-bin/report.cgi?computertoday=";
     
     private TrayIcon trayIcon;
     private SystemTray tray;
     private Timer timer;
-    private Timer screensaverTimer;
-    private LocalDateTime lastActivity;
+    private Timer sampleTimer;
+    private LocalDateTime startTime;
+    private LocalDateTime lastSample;
     private Duration todayUsage = Duration.ZERO;
     private LocalDate currentDate;
     private boolean screensaverActive = false;
-    private LocalDateTime screensaverStartTime = null;
+    private boolean userIdle = false;
     
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
@@ -53,7 +60,8 @@ public class UsageTracker {
         }
         
         currentDate = LocalDate.now();
-        lastActivity = LocalDateTime.now();
+        startTime = LocalDateTime.now();
+        lastSample = startTime;
         
         // Create data directory if it doesn't exist
         File dataDir = new File(DATA_DIRECTORY);
@@ -69,12 +77,12 @@ public class UsageTracker {
     }
     
     private void startTracking() {
-        // Start screensaver detection
-        setupScreensaverDetection();
-        
-        // Schedule regular updates
+        // Start sampling the user activity
+        setupSampling();
+
+        // Schedule regular updates (saving to disk and reporting to the server)
         timer = new Timer();
-        timer.scheduleAtFixedRate(new TimerTask() {
+        timer.schedule(new TimerTask() {
             @Override
             public void run() {
                 SwingUtilities.invokeLater(() -> updateUsageTime());
@@ -120,84 +128,58 @@ public class UsageTracker {
         }
     }
     
-    private void setupScreensaverDetection() {
-        // Check screensaver status periodically using our ScreensaverDetector
-        screensaverTimer = new Timer();
-        screensaverTimer.scheduleAtFixedRate(new TimerTask() {
+    private void setupSampling() {
+        // schedule (and not scheduleAtFixedRate): after a suspension the timer must not fire a burst of
+        // delayed samples. Samples run on the Swing thread, like the rest of the state changes.
+        sampleTimer = new Timer();
+        sampleTimer.schedule(new TimerTask() {
             @Override
             public void run() {
-                checkScreensaverStatus();
+                SwingUtilities.invokeLater(() -> sample());
             }
-        }, 0, TimeUnit.SECONDS.toMillis(SCREENSAVER_CHECK_SECONDS));
-        
-        // Add global mouse and keyboard listeners to detect user activity
-        Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
-            if (event instanceof MouseEvent || event instanceof KeyEvent) {
-                // User activity detected
-                handleUserActivity();
-            }
-        }, AWTEvent.MOUSE_EVENT_MASK | AWTEvent.KEY_EVENT_MASK);
+        }, 0, TimeUnit.SECONDS.toMillis(SAMPLE_SECONDS));
     }
     
-    private void checkScreensaverStatus() {
-        boolean currentStatus = ScreenSaverDetector.isScreensaverActive();
+    // Adds to today's usage the time since the previous sample, if the user is really using the computer.
+    private void sample() {
+        LocalDateTime now = LocalDateTime.now();
+        long gapMillis = Duration.between(lastSample, now).toMillis();
+        lastSample = now;
         
-        // Screensaver has just started
-        if (currentStatus && !screensaverActive) {
-            screensaverActive = true;
-            screensaverStartTime = LocalDateTime.now();
-            
-            // Update current usage before pausing
-            Duration sessionTime = Duration.between(lastActivity, screensaverStartTime);
-            todayUsage = todayUsage.plus(sessionTime);
-            
-            System.out.println("Screensaver activated, pausing time tracking");
-        } 
-        // Screensaver has just ended
-        else if (!currentStatus && screensaverActive) {
-            handleUserActivity();
+        checkNewDay(now.toLocalDate());
+        
+        screensaverActive = ScreenSaverDetector.isScreensaverActive();
+        userIdle = ScreenSaverDetector.getIdleMillis() >= TimeUnit.MINUTES.toMillis(IDLE_LIMIT_MINUTES);
+        
+        boolean reasonableGap = gapMillis > 0 && gapMillis <= TimeUnit.SECONDS.toMillis(MAX_SAMPLE_GAP_SECONDS);
+        if (reasonableGap && !screensaverActive && !userIdle) {
+            todayUsage = todayUsage.plusMillis(gapMillis);
         }
     }
     
-    private void handleUserActivity() {
-        if (screensaverActive) {
-            screensaverActive = false;
-            System.out.println("Screensaver deactivated, resuming time tracking");
-            
-            // Reset the last activity time to now
-            lastActivity = LocalDateTime.now();
-            screensaverStartTime = null;
+    // When the day changes, the file of the previous day is closed and the counter starts again at zero.
+    private void checkNewDay(LocalDate today) {
+        if (!today.equals(currentDate)) {
+            writeUsageFile(); // Save previous day's data (not reported to the server: it is not today's)
+            currentDate = today;
+            todayUsage = Duration.ZERO;
+            loadTodayUsage(); // Load today's data if exists
         }
     }
     
     private void updateUsageTime() {
-        LocalDate now = LocalDate.now();
-        
-        // Check if day changed
-        if (!now.equals(currentDate)) {
-            saveUsageTime(); // Save previous day's data
-            currentDate = now;
-            todayUsage = Duration.ZERO;
-            loadTodayUsage(); // Load today's data if exists
-        }
-        
-        if (!screensaverActive) {
-            LocalDateTime currentTime = LocalDateTime.now();
-            Duration sessionTime = Duration.between(lastActivity, currentTime);
-            
-            // Only add time if it's reasonable (less than the check interval)
-            if (sessionTime.toMinutes() <= SAVE_INTERVAL_MINUTES * 2) {
-                todayUsage = todayUsage.plus(sessionTime);
-            }
-            
-            lastActivity = currentTime;
-        }
-        
+        checkNewDay(LocalDate.now());
         saveUsageTime();
         updateTrayTooltip();
     }
     
     private void saveUsageTime() {
+        writeUsageFile();
+        // Call the API to report minutes
+        reportToApi(todayUsage.toMinutes());
+    }
+    
+    private void writeUsageFile() {
         String filename = DATA_DIRECTORY + File.separator + currentDate.format(DATE_FORMAT) + ".txt";
         long totalMinutes = todayUsage.toMinutes();
         try (PrintWriter writer = new PrintWriter(new FileWriter(filename))) {
@@ -212,8 +194,6 @@ public class UsageTracker {
             System.err.println("Error saving usage data: " + e.getMessage());
             trayIcon.displayMessage("Error", "Failed to save usage data", MessageType.ERROR);
         }
-        // Call the API to report minutes
-        reportToApi(totalMinutes);        
     }
 private void reportToApi(long minutes) {
         // Run the API call in a separate thread to avoid blocking the UI
@@ -271,6 +251,7 @@ private void reportToApi(long minutes) {
         long minutes = totalMinutes % 60;
         
         String screensaverStatus = screensaverActive ? "Active" : "Inactive";
+        String activityStatus = userIdle ? "idle (not counted)" : "active (counted)";
         String version ="";
         try{
         URL classUrl = UsageTracker.class.getResource("UsageTracker.class");
@@ -287,8 +268,9 @@ private void reportToApi(long minutes) {
                          "Current screensaver status: %s\n" +
                          "Data saved every %d minutes to:\n%s",
                          hours, minutes, 
-                         lastActivity.format(DateTimeFormatter.ofPattern("HH:mm:ss")),
+                         startTime.format(DateTimeFormatter.ofPattern("HH:mm:ss")),
                          screensaverStatus,
+                         activityStatus,
                          SAVE_INTERVAL_MINUTES,
                          DATA_DIRECTORY + File.separator + currentDate.format(DATE_FORMAT) + ".txt"),
             "SkynetW Usage Statistics",
